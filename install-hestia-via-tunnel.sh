@@ -14,7 +14,8 @@
 #   1) این فایل را روی سرور ایران کپی کنید و با روت اجرا کنید:
 #        chmod +x install-hestia-via-tunnel.sh
 #        ./install-hestia-via-tunnel.sh
-#   2) اسکریپت مقادیر لازم (اطلاعات سرور خارج و ...) را در ترمینال می‌پرسد.
+#   2) اسکریپت مقادیر لازم (آدرس/یوزر/رمز عبور سرور خارج و ...) را در
+#      ترمینال می‌پرسد. اتصال به سرور خارج با رمز عبور (نه کلید) انجام می‌شود.
 #   3) بعد از اطمینان از سالم بودن نصب، اسکریپت remove-tunnel.sh را
 #      اجرا کنید تا تانل و تنظیمات موقت پاک شوند.
 #
@@ -51,32 +52,36 @@ RELAY_PORT="${RELAY_PORT:-22}"
 read -rp "یوزر SSH سرور خارج [root]: " RELAY_USER
 RELAY_USER="${RELAY_USER:-root}"
 
-read -rp "مسیر کلید خصوصی SSH [/root/.ssh/id_rsa]: " RELAY_SSH_KEY
-RELAY_SSH_KEY="${RELAY_SSH_KEY:-/root/.ssh/id_rsa}"
+read -rsp "رمز عبور SSH سرور خارج: " RELAY_SSH_PASSWORD
+echo ""
 
 echo ""
 echo "پارامترهای نصب HestiaCP (اختیاری، Enter بزنید تا نصب تعاملی بپرسد):"
 read -rp "هاست‌نیم پنل (مثلا panel.example.com): " HESTIA_HOSTNAME
 read -rp "ایمیل ادمین پنل: " HESTIA_EMAIL
 
-if [[ ! -f "$RELAY_SSH_KEY" ]]; then
-  err "کلید SSH پیدا نشد: $RELAY_SSH_KEY"
-  exit 1
+if ! command -v sshpass >/dev/null 2>&1; then
+  log "نصب sshpass برای اتصال با رمز عبور ..."
+  apt-get update -qq
+  apt-get install -y sshpass >/dev/null
 fi
 
 # ---------- 1) برقراری تانل SOCKS5 به سرور خارج ----------
 log "برقراری تانل SSH به $RELAY_USER@$RELAY_HOST:$RELAY_PORT ..."
 
-ssh -N -D "127.0.0.1:${SOCKS_PORT}" \
+export SSHPASS="$RELAY_SSH_PASSWORD"
+sshpass -e ssh -N -D "127.0.0.1:${SOCKS_PORT}" \
     -o ServerAliveInterval=30 \
     -o ServerAliveCountMax=3 \
     -o ExitOnForwardFailure=yes \
     -o StrictHostKeyChecking=accept-new \
-    -i "$RELAY_SSH_KEY" \
+    -o PreferredAuthentications=password \
+    -o PubkeyAuthentication=no \
     -p "$RELAY_PORT" \
     "${RELAY_USER}@${RELAY_HOST}" &
 TUNNEL_PID=$!
 echo "$TUNNEL_PID" > "$PID_FILE"
+unset SSHPASS RELAY_SSH_PASSWORD
 
 # صبر برای بالا آمدن پورت SOCKS
 for i in $(seq 1 15); do
