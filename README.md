@@ -25,16 +25,15 @@
 
 ## استفاده
 
-### ۱) اجرا روی سرور ایران
+### ۱) اجرا روی سرور ایران (یک خط، مستقیم از GitHub)
 
-نیازی به ادیت کردن فایل نیست؛ اسکریپت مقادیر لازم را در ترمینال می‌پرسد.
+نیازی به دانلود یا ادیت فایل نیست. این دستور را مستقیم در ترمینال سرور ایران (به‌عنوان root) بزنید:
 
 ```bash
-scp install-hestia-via-tunnel.sh remove-tunnel.sh root@IRAN_SERVER:/root/
-ssh root@IRAN_SERVER
-chmod +x install-hestia-via-tunnel.sh remove-tunnel.sh
-./install-hestia-via-tunnel.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/persiato/HestiaCP-via-SSH/main/install-hestia-via-tunnel.sh)
 ```
+
+> از `bash <(curl ...)` استفاده شده نه `curl | bash`، چون در حالت pipe ورودی ترمینال با محتوای اسکریپت قاطی می‌شود و `read`های داخل اسکریپت کار نمی‌کنند. با این روش، ترمینال برای تایپ پاسخ‌ها آزاد می‌ماند.
 
 هنگام اجرا این مقادیر پرسیده می‌شود:
 
@@ -46,10 +45,12 @@ chmod +x install-hestia-via-tunnel.sh remove-tunnel.sh
 
 اتصال با کمک ابزار `sshpass` انجام می‌شود؛ اگر نصب نباشد، اسکریپت خودش آن را نصب می‌کند.
 
+اگر دسترسی مستقیم به `raw.githubusercontent.com` از سرور ایران فیلتر بود، به‌جای این دستور باید محتوای فایل را دستی کپی و روی سرور اجرا کنید (کلون کردن ریپو یا paste مستقیم اسکریپت).
+
 ### ۲) پاک‌سازی بعد از اطمینان از سالم بودن نصب
 
 ```bash
-./remove-tunnel.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/persiato/HestiaCP-via-SSH/main/remove-tunnel.sh)
 ```
 
 این اسکریپت تانل SSH، فایل پروکسی apt (`/etc/apt/apt.conf.d/95-hestia-tunnel-proxy`)، تنظیمات اضافه‌شده به `privoxy` و خود بسته `privoxy` را حذف می‌کند.
