@@ -1,28 +1,27 @@
 #!/usr/bin/env bash
 #
-# نصب HestiaCP روی سرور ایران با عبور از فیلترینگ از طریق تانل SSH
+# Install HestiaCP on an Iran-based server by tunneling all install
+# traffic through an SSH SOCKS5 tunnel to a foreign relay server.
 # ------------------------------------------------------------------
-# نحوه کار:
-#   1) یک تانل SSH با پورت‌فورواردینگ داینامیک (SOCKS5) از این سرور
-#      به یک سرور خارج از ایران (relay) برقرار می‌شود.
-#   2) با privoxy، آن SOCKS5 به یک پروکسی HTTP محلی تبدیل می‌شود
-#      (چون apt-get از SOCKS5 پشتیبانی نمی‌کند).
-#   3) apt / curl / wget / git با استفاده از همین پروکسی محلی اجرا
-#      می‌شوند تا نصب HestiaCP از گیت‌هاب و مخازن آن انجام شود.
+# How it works:
+#   1) An SSH dynamic port forward (SOCKS5) is opened from this server
+#      to a foreign (non-Iran) relay server.
+#   2) privoxy converts that SOCKS5 tunnel into a local HTTP proxy
+#      (apt-get does not support SOCKS5 proxies directly).
+#   3) apt / curl / wget use that local HTTP proxy to install HestiaCP
+#      from GitHub and its own repositories.
 #
-# نحوه اجرا:
-#   1) این فایل را روی سرور ایران کپی کنید و با روت اجرا کنید:
-#        chmod +x install-hestia-via-tunnel.sh
-#        ./install-hestia-via-tunnel.sh
-#   2) اسکریپت مقادیر لازم (آدرس/یوزر/رمز عبور سرور خارج و ...) را در
-#      ترمینال می‌پرسد. اتصال به سرور خارج با رمز عبور (نه کلید) انجام می‌شود.
-#   3) بعد از اطمینان از سالم بودن نصب، اسکریپت remove-tunnel.sh را
-#      اجرا کنید تا تانل و تنظیمات موقت پاک شوند.
+# Usage:
+#   Run this directly on the Iran server as root:
+#     bash <(curl -fsSL https://raw.githubusercontent.com/persiato/HestiaCP-via-SSH/main/install-hestia-via-tunnel.sh)
+#   It will prompt for the relay server's address, port, user and
+#   password. After the install is confirmed working, run
+#   remove-tunnel.sh to tear down the tunnel and temporary proxy.
 #
 set -euo pipefail
 
-SOCKS_PORT="1080"                     # پورت لوکال SOCKS5
-PROXY_PORT="8118"                     # پورت لوکال HTTP (privoxy)
+SOCKS_PORT="1080"   # local SOCKS5 port
+PROXY_PORT="8118"   # local HTTP proxy port (privoxy)
 
 PID_FILE="/var/run/hestia-ssh-tunnel.pid"
 APT_PROXY_FILE="/etc/apt/apt.conf.d/95-hestia-tunnel-proxy"
@@ -34,40 +33,40 @@ log() { printf '\n\033[1;32m[+] %s\033[0m\n' "$1"; }
 err() { printf '\n\033[1;31m[!] %s\033[0m\n' "$1" >&2; }
 
 if [[ $EUID -ne 0 ]]; then
-  err "این اسکریپت باید با روت اجرا شود (sudo)."
+  err "This script must be run as root (sudo)."
   exit 1
 fi
 
-# ---------- 0) دریافت اطلاعات از کاربر ----------
-echo "اطلاعات سرور خارج (relay) که تانل SSH از طریق آن برقرار می‌شود:"
+# ---------- 0) Collect input ----------
+echo "Details of the foreign (non-Iran) relay server the SSH tunnel connects to:"
 
 RELAY_HOST=""
 until [[ -n "$RELAY_HOST" ]]; do
-  read -rp "آدرس IP یا دامنه سرور خارج: " RELAY_HOST
+  read -rp "Relay server IP or domain: " RELAY_HOST
 done
 
-read -rp "پورت SSH سرور خارج [22]: " RELAY_PORT
+read -rp "Relay SSH port [22]: " RELAY_PORT
 RELAY_PORT="${RELAY_PORT:-22}"
 
-read -rp "یوزر SSH سرور خارج [root]: " RELAY_USER
+read -rp "Relay SSH user [root]: " RELAY_USER
 RELAY_USER="${RELAY_USER:-root}"
 
-read -rsp "رمز عبور SSH سرور خارج: " RELAY_SSH_PASSWORD
+read -rsp "Relay SSH password: " RELAY_SSH_PASSWORD
 echo ""
 
 echo ""
-echo "پارامترهای نصب HestiaCP (اختیاری، Enter بزنید تا نصب تعاملی بپرسد):"
-read -rp "هاست‌نیم پنل (مثلا panel.example.com): " HESTIA_HOSTNAME
-read -rp "ایمیل ادمین پنل: " HESTIA_EMAIL
+echo "HestiaCP install parameters (optional, press Enter to let the installer ask interactively):"
+read -rp "Panel hostname (e.g. panel.example.com): " HESTIA_HOSTNAME
+read -rp "Panel admin email: " HESTIA_EMAIL
 
 if ! command -v sshpass >/dev/null 2>&1; then
-  log "نصب sshpass برای اتصال با رمز عبور ..."
+  log "Installing sshpass for password-based SSH ..."
   apt-get update -qq
   apt-get install -y sshpass >/dev/null
 fi
 
-# ---------- 1) برقراری تانل SOCKS5 به سرور خارج ----------
-log "برقراری تانل SSH به $RELAY_USER@$RELAY_HOST:$RELAY_PORT ..."
+# ---------- 1) Open the SOCKS5 tunnel to the relay server ----------
+log "Opening SSH tunnel to $RELAY_USER@$RELAY_HOST:$RELAY_PORT ..."
 
 export SSHPASS="$RELAY_SSH_PASSWORD"
 sshpass -e ssh -N -D "127.0.0.1:${SOCKS_PORT}" \
@@ -83,32 +82,36 @@ TUNNEL_PID=$!
 echo "$TUNNEL_PID" > "$PID_FILE"
 unset SSHPASS RELAY_SSH_PASSWORD
 
-# صبر برای بالا آمدن پورت SOCKS
+# wait for the SOCKS port to come up
 for i in $(seq 1 15); do
   if timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/${SOCKS_PORT}" 2>/dev/null; then
     break
   fi
   if [[ "$i" -eq 15 ]]; then
-    err "تانل SSH برقرار نشد. اتصال به سرور خارج را بررسی کنید."
+    err "SSH tunnel did not come up. Check connectivity to the relay server."
     kill "$TUNNEL_PID" 2>/dev/null || true
     rm -f "$PID_FILE"
     exit 1
   fi
   sleep 1
 done
-log "تانل برقرار شد (PID: $TUNNEL_PID)، پورت SOCKS5: 127.0.0.1:${SOCKS_PORT}"
+log "Tunnel is up (PID: $TUNNEL_PID), SOCKS5 on 127.0.0.1:${SOCKS_PORT}"
 
-# ---------- 2) نصب و تنظیم privoxy برای تبدیل SOCKS5 به HTTP ----------
-log "نصب privoxy ..."
+# ---------- 2) Install and configure privoxy (SOCKS5 -> HTTP) ----------
+log "Installing privoxy ..."
 apt-get update -qq
 apt-get install -y privoxy >/dev/null
 
 if ! grep -q "$MARK_START" "$PRIVOXY_CONFIG" 2>/dev/null; then
+  # Remove any pre-existing listen-address line first: privoxy's default
+  # config already binds 127.0.0.1:8118, and a duplicate directive makes
+  # the service fail to start (address already in use).
+  sed -i '/^[[:space:]]*listen-address/d' "$PRIVOXY_CONFIG"
   {
     echo ""
     echo "$MARK_START"
     echo "listen-address 127.0.0.1:${PROXY_PORT}"
-    # forward-socks5t: رزولوشن DNS هم از طریق تانل انجام می‌شود تا فیلترینگ DNS دور زده شود
+    # forward-socks5t also resolves DNS through the tunnel, to avoid DNS-based filtering
     echo "forward-socks5t / 127.0.0.1:${SOCKS_PORT} ."
     echo "$MARK_END"
   } >> "$PRIVOXY_CONFIG"
@@ -117,21 +120,21 @@ fi
 systemctl restart privoxy
 sleep 1
 if ! systemctl is-active --quiet privoxy; then
-  err "privoxy بالا نیامد. لاگ آن را با journalctl -u privoxy بررسی کنید."
+  err "privoxy failed to start. Check: journalctl -u privoxy"
   exit 1
 fi
-log "privoxy روی 127.0.0.1:${PROXY_PORT} فعال شد."
+log "privoxy is active on 127.0.0.1:${PROXY_PORT}"
 
-# ---------- 3) تست اتصال از طریق پروکسی ----------
-log "تست دسترسی به GitHub از طریق تانل ..."
+# ---------- 3) Test connectivity through the proxy ----------
+log "Testing access to GitHub through the tunnel ..."
 if ! curl -x "http://127.0.0.1:${PROXY_PORT}" -sSf --max-time 15 -o /dev/null \
      https://raw.githubusercontent.com; then
-  err "دسترسی از طریق تانل موفق نبود. تنظیمات سرور خارج را بررسی کنید."
+  err "Could not reach the internet through the tunnel. Check the relay server."
   exit 1
 fi
-log "اتصال از طریق تانل سالم است."
+log "Tunnel connectivity looks good."
 
-# ---------- 4) تنظیم پروکسی برای apt و متغیرهای محیطی ----------
+# ---------- 4) Configure the apt proxy and environment variables ----------
 cat > "$APT_PROXY_FILE" <<EOF
 Acquire::http::Proxy "http://127.0.0.1:${PROXY_PORT}/";
 Acquire::https::Proxy "http://127.0.0.1:${PROXY_PORT}/";
@@ -142,23 +145,22 @@ export https_proxy="http://127.0.0.1:${PROXY_PORT}"
 export HTTP_PROXY="$http_proxy"
 export HTTPS_PROXY="$https_proxy"
 
-# ---------- 5) دانلود و اجرای نصب‌کننده HestiaCP ----------
-log "دانلود نصب‌کننده HestiaCP ..."
+# ---------- 5) Download and run the HestiaCP installer ----------
+log "Downloading the HestiaCP installer ..."
 cd /root
 curl -x "http://127.0.0.1:${PROXY_PORT}" -fsSL \
   -o hst-install.sh \
   https://raw.githubusercontent.com/hestiacp/hestiacp/release/install/hst-install.sh
 chmod +x hst-install.sh
 
-log "اجرای نصب HestiaCP (این مرحله چند دقیقه طول می‌کشد) ..."
+log "Running the HestiaCP installer (this takes several minutes) ..."
 HESTIA_ARGS=()
 [[ -n "$HESTIA_HOSTNAME" ]] && HESTIA_ARGS+=(--hostname "$HESTIA_HOSTNAME")
 [[ -n "$HESTIA_EMAIL" ]] && HESTIA_ARGS+=(--email "$HESTIA_EMAIL")
 
 ./hst-install.sh "${HESTIA_ARGS[@]}"
 
-log "نصب HestiaCP تمام شد."
+log "HestiaCP install finished."
 echo ""
-echo "توجه: تانل SSH و تنظیمات پروکسی هنوز فعال هستند (برای پایداری نصب)."
-echo "بعد از اطمینان از سالم بودن پنل، اسکریپت remove-tunnel.sh را اجرا کنید"
-echo "تا تانل و پروکسی موقت به طور کامل پاک شوند."
+echo "Note: the SSH tunnel and proxy settings are still active (kept for install stability)."
+echo "Once you've confirmed the panel works, run remove-tunnel.sh to fully clean them up."
