@@ -66,6 +66,17 @@ if ! command -v sshpass >/dev/null 2>&1; then
 fi
 
 # ---------- 1) Open the SOCKS5 tunnel to the relay server ----------
+
+# Clean up any leftover tunnel from a previous run first, otherwise the
+# new ssh process fails with "Address already in use" on $SOCKS_PORT.
+if [[ -f "$PID_FILE" ]]; then
+  OLD_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+  [[ -n "$OLD_PID" ]] && kill "$OLD_PID" 2>/dev/null || true
+  rm -f "$PID_FILE"
+fi
+pkill -f "ssh -N -D 127.0.0.1:${SOCKS_PORT}" 2>/dev/null || true
+sleep 1
+
 log "Opening SSH tunnel to $RELAY_USER@$RELAY_HOST:$RELAY_PORT ..."
 
 export SSHPASS="$RELAY_SSH_PASSWORD"
@@ -81,6 +92,13 @@ sshpass -e ssh -N -D "127.0.0.1:${SOCKS_PORT}" \
 TUNNEL_PID=$!
 echo "$TUNNEL_PID" > "$PID_FILE"
 unset SSHPASS RELAY_SSH_PASSWORD
+
+sleep 1
+if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+  err "SSH tunnel process exited immediately. Check the relay address/port/user/password."
+  rm -f "$PID_FILE"
+  exit 1
+fi
 
 # wait for the SOCKS port to come up
 for i in $(seq 1 15); do
@@ -102,20 +120,20 @@ log "Installing privoxy ..."
 apt-get update -qq
 apt-get install -y privoxy >/dev/null
 
-if ! grep -q "$MARK_START" "$PRIVOXY_CONFIG" 2>/dev/null; then
-  # Remove any pre-existing listen-address line first: privoxy's default
-  # config already binds 127.0.0.1:8118, and a duplicate directive makes
-  # the service fail to start (address already in use).
-  sed -i '/^[[:space:]]*listen-address/d' "$PRIVOXY_CONFIG"
-  {
-    echo ""
-    echo "$MARK_START"
-    echo "listen-address 127.0.0.1:${PROXY_PORT}"
-    # forward-socks5t also resolves DNS through the tunnel, to avoid DNS-based filtering
-    echo "forward-socks5t / 127.0.0.1:${SOCKS_PORT} ."
-    echo "$MARK_END"
-  } >> "$PRIVOXY_CONFIG"
-fi
+# Rebuilt fresh on every run (idempotent), in case a previous run left a
+# stale/broken block here. Remove our old block plus any listen-address
+# line first: privoxy's default config already binds 127.0.0.1:8118, and
+# a duplicate directive makes the service fail to start (address in use).
+sed -i "/${MARK_START}/,/${MARK_END}/d" "$PRIVOXY_CONFIG" 2>/dev/null || true
+sed -i '/^[[:space:]]*listen-address/d' "$PRIVOXY_CONFIG"
+{
+  echo ""
+  echo "$MARK_START"
+  echo "listen-address 127.0.0.1:${PROXY_PORT}"
+  # forward-socks5t also resolves DNS through the tunnel, to avoid DNS-based filtering
+  echo "forward-socks5t / 127.0.0.1:${SOCKS_PORT} ."
+  echo "$MARK_END"
+} >> "$PRIVOXY_CONFIG"
 
 systemctl restart privoxy
 sleep 1
